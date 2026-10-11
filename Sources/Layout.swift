@@ -124,7 +124,7 @@ enum Layout {
     enum DropResult: Equatable {
         case none
         case snapBack(Int)
-        case swap(Int, Int)
+        case move(Int, Int)     // the dragged window takes the slot of the second one
         case float(Int)
     }
 
@@ -133,7 +133,7 @@ enum Layout {
     /// `screens` the displays Corral tiles onto. A drag moves a window without resizing it and
     /// ends with the pointer on it; an edge resize changes the size, and a window moved from the
     /// keyboard has no pointer on it, so neither counts.
-    /// Dropped off every tiled display it floats; over another window's slot the two swap;
+    /// Dropped off every tiled display it floats; over another window's slot it moves there;
     /// anywhere else it goes back to its slot.
     static func drop(at point: CGPoint, slots: [Int: CGRect], sizes: [Int: CGSize], frames: [Int: CGRect],
                      screens: [CGRect], threshold: CGFloat = 24, sizeTolerance: CGFloat = 8) -> DropResult {
@@ -147,7 +147,52 @@ enum Layout {
         guard let id = dragged.min() else { return .none }
         guard screens.contains(where: { $0.contains(point) }) else { return .float(id) }
         guard let other = cell(at: point, in: slots), other != id else { return .snapBack(id) }
-        return .swap(id, other)
+        return .move(id, other)
+    }
+
+    // MARK: - reordering
+
+    /// `visible` with `id` moved to position `index`; the windows in between shift by one.
+    static func moving(_ id: Int, to index: Int, in visible: [Int]) -> [Int] {
+        guard let from = visible.firstIndex(of: id) else { return visible }
+        var v = visible
+        v.remove(at: from)
+        v.insert(id, at: min(max(index, 0), v.count))
+        return v
+    }
+
+    /// Sessions that need you first, in the order given, then everyone else as they were.
+    static func needsYouFirst(_ visible: [Int], pending: [Int]) -> [Int] {
+        let present = Set(visible)
+        var seen: Set<Int> = []
+        let first = pending.filter { present.contains($0) && seen.insert($0).inserted }
+        return first + visible.filter { !seen.contains($0) }
+    }
+
+    /// Writes a new slot order for the tiled windows (`visible`) back into `order`, which also
+    /// holds windows that are not tiled right now (minimised, on another Space). Those keep their
+    /// place; the tiled ones fill the positions tiled ones had, in exactly the `visible` order
+    /// (a tiled window `order` did not know yet adds one position at the end).
+    static func reordered(_ order: [Int], visible: [Int]) -> [Int] {
+        var seen: Set<Int> = []
+        let full = (order + visible).filter { seen.insert($0).inserted }
+        let tiled = Set(visible)
+        var next = visible.makeIterator()
+        return full.map { tiled.contains($0) ? next.next() ?? $0 : $0 }
+    }
+
+    /// The window an up or down move swaps with: in the nearest row above (or below) `id`, the one
+    /// closest to it horizontally. Only windows that overlap it horizontally count, so a window
+    /// on a display beside this one is never above or below it.
+    static func neighbour(of id: Int, up: Bool, frames: [Int: CGRect]) -> Int? {
+        guard let cur = frames[id] else { return nil }
+        let candidates = frames.filter { other, f in
+            other != id && f.maxX > cur.minX && f.minX < cur.maxX && (up ? f.midY < cur.minY : f.midY > cur.maxY)
+        }
+        let tops = candidates.values.map(\.minY)
+        guard let row = up ? tops.max() : tops.min() else { return nil }
+        return candidates.filter { abs($0.value.minY - row) <= rowTolerance }
+            .min { (abs($0.value.midX - cur.midX), $0.key) < (abs($1.value.midX - cur.midX), $1.key) }?.key
     }
 
     /// Same rectangle give or take `tolerance` points on every edge.

@@ -68,6 +68,7 @@ final class Corral: NSObject, NSMenuDelegate {
     private var order: [Int] = []             // slot order; windows that left keep their place for when they return
     private var placements: [Int: Placement] = [:]
     private var undoStack: [[Int: CGRect]] = []
+    private var lastPending: Set<Int> = []    // sessions that needed you at the last poll
     private var pendingTile: DispatchWorkItem?
     private var problem: Problem?
     private var timer: Timer?
@@ -124,6 +125,13 @@ final class Corral: NSObject, NSMenuDelegate {
         hk.register(.init(keyCode: Key.o, label: "⌃⌥O") { [weak self] in self?.toggleFloat() })
         hk.register(.init(keyCode: Key.z, label: "⌃⌥Z") { [weak self] in self?.undoLayout() })
         hk.register(.init(keyCode: Key.s, label: "⌃⌥S") { [weak self] in self?.openMenu() })
+        hk.register(.init(keyCode: Key.p, label: "⌃⌥P") { [weak self] in self?.needsYouFirst() })
+        hk.register(.init(keyCode: Key.left, label: "⌃⌥←") { [weak self] in self?.moveFront(by: -1) })
+        hk.register(.init(keyCode: Key.right, label: "⌃⌥→") { [weak self] in self?.moveFront(by: 1) })
+        hk.register(.init(keyCode: Key.up, label: "⌃⌥↑") { [weak self] in self?.moveFrontRow(up: true) })
+        hk.register(.init(keyCode: Key.down, label: "⌃⌥↓") { [weak self] in self?.moveFrontRow(up: false) })
+        hk.register(.init(keyCode: Key.left, modifiers: HotKeys.withShift, label: "⌃⌥⇧←") { [weak self] in self?.moveFrontToEnd(first: true) })
+        hk.register(.init(keyCode: Key.right, modifiers: HotKeys.withShift, label: "⌃⌥⇧→") { [weak self] in self?.moveFrontToEnd(first: false) })
         for (i, code) in Key.digits.enumerated() {
             hk.register(.init(keyCode: code, label: "⌃⌥\(i + 1)") { [weak self] in self?.focusSlot(i) })
         }
@@ -189,6 +197,7 @@ final class Corral: NSObject, NSMenuDelegate {
         updateSessions()
         if reportOnly { return }
         installMouseMonitor()
+        keepNeedsYouFirst()
 
         if settings.autoTile, WindowMover.trusted, pendingTile == nil {
             let ids = Set(tileable.map(\.id))
@@ -403,6 +412,82 @@ final class Corral: NSObject, NSMenuDelegate {
         if settings.autoTile { tile() } else { refreshStatus() }
     }
 
+    // MARK: - reordering
+
+    /// The tiled windows in slot order, as the next tile places them. In the focus layout the
+    /// main pane stays where it is, so it is left out.
+    private var movableSequence: [Int] {
+        let seq = tileOrder(tileable, fromFrames: false)
+        if case .focus(let main) = mode { return seq.filter { $0 != main } }
+        return seq
+    }
+
+    /// Puts the windows in `visible` in this slot order; every other window keeps its place.
+    /// Returns false when nothing changes.
+    @discardableResult
+    private func setSlotOrder(_ visible: [Int]) -> Bool {
+        let base = order + tileOrder(tileable, fromFrames: false).filter { !order.contains($0) }
+        let next = Layout.reordered(base, visible: visible)
+        guard next != base else { return false }
+        order = next
+        return true
+    }
+
+    private func reorderAndTile(_ visible: [Int]) {
+        if setSlotOrder(visible) { tile() } else { NSSound.beep() }
+    }
+
+    /// The front window moves one slot back or forward; the window there takes its place.
+    private func moveFront(by step: Int) {
+        let seq = movableSequence
+        guard let id = frontWindowID, let i = seq.firstIndex(of: id), seq.indices.contains(i + step) else {
+            NSSound.beep(); return
+        }
+        reorderAndTile(Layout.moving(id, to: i + step, in: seq))
+    }
+
+    /// The front window goes to the first or the last slot; everyone in between shifts by one.
+    private func moveFrontToEnd(first: Bool) {
+        let seq = movableSequence
+        guard let id = frontWindowID, seq.contains(id) else { NSSound.beep(); return }
+        reorderAndTile(Layout.moving(id, to: first ? 0 : seq.count - 1, in: seq))
+    }
+
+    /// The front window swaps with the window above or below it.
+    private func moveFrontRow(up: Bool) {
+        let seq = movableSequence
+        let frames = plan(tileable).frames.filter { seq.contains($0.key) }
+        guard let id = frontWindowID, let i = seq.firstIndex(of: id),
+              let other = Layout.neighbour(of: id, up: up, frames: frames), let j = seq.firstIndex(of: other) else {
+            NSSound.beep(); return
+        }
+        var next = seq
+        next.swapAt(i, j)
+        reorderAndTile(next)
+    }
+
+    /// Sessions that need you take the first slots: asking longest first, then finished longest first.
+    private func needsYouFirst() {
+        let seq = movableSequence
+        reorderAndTile(Layout.needsYouFirst(seq, pending: tracker.attention.map(\.id)))
+    }
+
+    /// With "Keep sessions that need you first" on: when a session starts asking or finishes, the
+    /// ones that need you move to the first slots. Nothing moves back once you have dealt with one,
+    /// so the window you are typing in only moves when another session starts needing you.
+    private func keepNeedsYouFirst() {
+        let pending = tracker.attention.map(\.id)
+        let current = Set(pending)
+        guard settings.needsYouFirst, settings.autoTile, !current.isSubset(of: lastPending) else {
+            lastPending = current
+            return
+        }
+        // Not in the middle of a drag or another tile: try again at the next poll.
+        guard WindowMover.trusted, pendingTile == nil, NSEvent.pressedMouseButtons == 0 else { return }
+        lastPending = current
+        if setSlotOrder(Layout.needsYouFirst(movableSequence, pending: pending)) { tile() }
+    }
+
     // MARK: - dragging
 
     /// Watches for the mouse button going up while Terminal is in front: that is the end
@@ -416,8 +501,10 @@ final class Corral: NSObject, NSMenuDelegate {
         }
     }
 
-    /// After you drag a tiled window and let go: dropped on another slot, the two swap places;
-    /// dropped on a display Corral does not tile onto, it floats there; anywhere else it snaps back.
+    /// After you drag a tiled window and let go: dropped on another slot, it moves there and the
+    /// windows in between shift by one; dropped on a display Corral does not tile onto, it floats
+    /// there; anywhere else it snaps back. In the focus layout a drop onto or from the main pane
+    /// swaps the two windows, so the main pane always holds one.
     private func handleDrop(at point: CGPoint) {
         guard pendingTile == nil, WindowMover.trusted, !placements.isEmpty else { return }
         let result = Layout.drop(at: point, slots: placements.mapValues(\.target),
@@ -431,10 +518,13 @@ final class Corral: NSObject, NSMenuDelegate {
         case .float(let id):
             setFloating(floating.union([id]))
             if mode == .focus(id) { setMode(.grid) }
-        case .swap(let a, let b):
-            if let i = order.firstIndex(of: a), let j = order.firstIndex(of: b) { order.swapAt(i, j) }
-            if case .focus(let main) = mode {
-                if main == a { setMode(.focus(b)) } else if main == b { setMode(.focus(a)) }
+        case .move(let id, let other):
+            if case .focus(let main) = mode, main == id || main == other {
+                if let i = order.firstIndex(of: id), let j = order.firstIndex(of: other) { order.swapAt(i, j) }
+                setMode(.focus(main == id ? other : id))
+            } else {
+                let seq = movableSequence
+                if let to = seq.firstIndex(of: other) { setSlotOrder(Layout.moving(id, to: to, in: seq)) }
             }
         }
         tile()
@@ -572,6 +662,10 @@ final class Corral: NSObject, NSMenuDelegate {
         if case .focus = mode { focusItem.state = .on }
         menu.addItem(focusItem)
         menu.addItem(action("Jump to the session that needs you", #selector(menuNextWaiting), key: "n"))
+        menu.addItem(action("Put sessions that need you first", #selector(menuNeedsYouFirst), key: "p"))
+        let move = NSMenuItem(title: "Move front window", action: nil, keyEquivalent: "")
+        move.submenu = moveMenu()
+        menu.addItem(move)
         menu.addItem(action("Float front window (leave it out of the grid)", #selector(menuFloat), key: "o"))
         let undo = action("Undo last layout", #selector(menuUndo), key: "z")
         undo.isEnabled = !undoStack.isEmpty
@@ -611,6 +705,27 @@ final class Corral: NSObject, NSMenuDelegate {
         menu.addItem(quit)
     }
 
+    private func moveMenu() -> NSMenu {
+        let m = NSMenu()
+        m.autoenablesItems = false
+        let items: [(String, Selector, Int, Bool)] = [
+            ("To the first slot", #selector(menuMoveFirst), NSLeftArrowFunctionKey, true),
+            ("To the last slot", #selector(menuMoveLast), NSRightArrowFunctionKey, true),
+            ("One slot back", #selector(menuMoveBack), NSLeftArrowFunctionKey, false),
+            ("One slot forward", #selector(menuMoveForward), NSRightArrowFunctionKey, false),
+            ("Up a row", #selector(menuMoveUp), NSUpArrowFunctionKey, false),
+            ("Down a row", #selector(menuMoveDown), NSDownArrowFunctionKey, false),
+        ]
+        for (title, selector, key, shift) in items {
+            let item = action(title, selector, key: Unicode.Scalar(UInt32(key)).map { String(Character($0)) } ?? "")
+            if shift { item.keyEquivalentModifierMask.insert(.shift) }
+            m.addItem(item)
+        }
+        m.addItem(.separator())
+        m.addItem(disabled("Or drag a window onto another slot"))
+        return m
+    }
+
     private func settingsMenu() -> NSMenu {
         let m = NSMenu()
         m.autoenablesItems = false
@@ -620,6 +735,9 @@ final class Corral: NSObject, NSMenuDelegate {
         let hl = action("Frame sessions that need you (red asking, orange finished)", #selector(toggleHighlight))
         hl.state = settings.highlightWaiting ? .on : .off
         m.addItem(hl)
+        let first = action("Keep sessions that need you first (moves windows on its own)", #selector(toggleNeedsYouFirst))
+        first.state = settings.needsYouFirst ? .on : .off
+        m.addItem(first)
         m.addItem(.separator())
 
         m.addItem(disabled("Tile onto"))
@@ -714,6 +832,13 @@ final class Corral: NSObject, NSMenuDelegate {
     @objc private func menuNextWaiting() { nextNeedingYou() }
     @objc private func menuFloat() { toggleFloat() }
     @objc private func menuUndo() { undoLayout() }
+    @objc private func menuNeedsYouFirst() { needsYouFirst() }
+    @objc private func menuMoveFirst() { moveFrontToEnd(first: true) }
+    @objc private func menuMoveLast() { moveFrontToEnd(first: false) }
+    @objc private func menuMoveBack() { moveFront(by: -1) }
+    @objc private func menuMoveForward() { moveFront(by: 1) }
+    @objc private func menuMoveUp() { moveFrontRow(up: true) }
+    @objc private func menuMoveDown() { moveFrontRow(up: false) }
 
     @objc private func menuFocusSession(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? Int { focus(id) }
@@ -722,6 +847,11 @@ final class Corral: NSObject, NSMenuDelegate {
     @objc private func toggleAutoTile() {
         settings.autoTile.toggle()
         if settings.autoTile { tile(fromFrames: true) }
+    }
+
+    @objc private func toggleNeedsYouFirst() {
+        settings.needsYouFirst.toggle()
+        lastPending = []      // on: the sessions that already need you move first now
     }
 
     @objc private func toggleHighlight() {

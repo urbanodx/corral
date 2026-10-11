@@ -82,9 +82,9 @@ check(Layout.cell(at: .zero, in: [:]) == nil, "no cells")
 let slotA = CGRect(x: 0, y: 30, width: 500, height: 400), slotB = CGRect(x: 504, y: 30, width: 500, height: 400)
 let tiledScreens = [CGRect(x: 0, y: 0, width: 1008, height: 800)]
 let slotsAB: [Int: CGRect] = [1: slotA, 2: slotB]
-// A dragged onto B's slot, pointer in A's title bar: swap.
+// A dragged onto B's slot, pointer in A's title bar: A moves there.
 check(Layout.drop(at: CGPoint(x: 700, y: 45), slots: slotsAB, sizes: [:], frames: [1: CGRect(x: 600, y: 35, width: 500, height: 400), 2: slotB],
-                  screens: tiledScreens) == .swap(1, 2), "drag onto another slot swaps")
+                  screens: tiledScreens) == .move(1, 2), "drag onto another slot moves there")
 // A nudged a little: back to its slot.
 check(Layout.drop(at: CGPoint(x: 100, y: 75), slots: slotsAB, sizes: [:], frames: [1: CGRect(x: 40, y: 70, width: 500, height: 400), 2: slotB],
                   screens: tiledScreens) == .snapBack(1), "small drag snaps back")
@@ -104,7 +104,58 @@ check(Layout.drop(at: CGPoint(x: 100, y: 100), slots: slotsAB, sizes: [:], frame
                   screens: tiledScreens) == .none, "keyboard move plus an unrelated click")
 // Sizes compare against what the window settled at (Terminal rounding), not the slot.
 check(Layout.drop(at: CGPoint(x: 700, y: 45), slots: slotsAB, sizes: [1: CGSize(width: 471, height: 395)],
-                  frames: [1: CGRect(x: 600, y: 35, width: 471, height: 395), 2: slotB], screens: tiledScreens) == .swap(1, 2), "settled size drag")
+                  frames: [1: CGRect(x: 600, y: 35, width: 471, height: 395), 2: slotB], screens: tiledScreens) == .move(1, 2), "settled size drag")
+
+// Moving: the first window to the end, the last to the front, one step, an unknown id.
+check(Layout.moving(1, to: 3, in: [1, 2, 3, 4]) == [2, 3, 4, 1], "first to last")
+check(Layout.moving(4, to: 0, in: [1, 2, 3, 4]) == [4, 1, 2, 3], "last to first")
+check(Layout.moving(2, to: 2, in: [1, 2, 3, 4]) == [1, 3, 2, 4], "one forward")
+check(Layout.moving(3, to: 1, in: [1, 2, 3, 4]) == [1, 3, 2, 4], "one back")
+check(Layout.moving(9, to: 0, in: [1, 2]) == [1, 2], "unknown id")
+check(Layout.moving(1, to: 99, in: [1, 2, 3]) == [2, 3, 1], "index clamped")
+
+// Needs you first: pending in the order given, the rest as they were; not-tiled ids ignored.
+check(Layout.needsYouFirst([1, 2, 3, 4, 5], pending: [4, 9, 2]) == [4, 2, 1, 3, 5], "needs you first")
+check(Layout.needsYouFirst([1, 2, 3], pending: []) == [1, 2, 3], "nobody pending")
+check(Layout.needsYouFirst([1, 2, 3], pending: [3, 3]) == [3, 1, 2], "duplicate pending")
+
+// Writing a new slot order back: a minimised window (9) keeps its place, new ones go last, no crash on duplicates.
+check(Layout.reordered([1, 9, 2, 3, 4], visible: [2, 3, 4, 1]) == [2, 9, 3, 4, 1], "hidden window keeps its place")
+check(Layout.reordered([1, 9, 2], visible: [3, 2, 1]) == [3, 9, 2, 1], "a tiled window order did not know: tiled ones in the new order, 9 stays")
+check(Layout.reordered([1, 1, 2], visible: [2, 1]) == [2, 1], "duplicates in order")
+check(Layout.reordered([], visible: [2, 1]) == [2, 1], "empty order")
+
+// Up and down: 14 windows in rows of 5, 5 and 4.
+check(Layout.rowCounts(n: 14, area: hd.size, gap: 4) == [5, 5, 4], "14 on 1080p -> \(Layout.rowCounts(n: 14, area: hd.size, gap: 4))")
+let grid14 = Dictionary(uniqueKeysWithValues: Layout.grid(n: 14, in: hd, gap: 4).enumerated().map { ($0.offset + 1, $0.element) })
+check(Layout.neighbour(of: 7, up: true, frames: grid14) == 2, "up from 7")
+check(Layout.neighbour(of: 2, up: false, frames: grid14) == 7, "down from 2")
+check(Layout.neighbour(of: 7, up: false, frames: grid14) == 12, "down from 7 to the closest wider cell \(String(describing: Layout.neighbour(of: 7, up: false, frames: grid14)))")
+check(Layout.neighbour(of: 3, up: true, frames: grid14) == nil, "nothing above the top row")
+check(Layout.neighbour(of: 11, up: false, frames: grid14) == nil, "nothing below the bottom row")
+// A window on a display to the right is never above or below.
+var twoScreens = grid14
+twoScreens[99] = CGRect(x: 0, y: 0, width: 800, height: 300)
+check(Layout.neighbour(of: 1, up: true, frames: twoScreens) == nil, "other display is not above")
+
+// Any display size: every count from 1 to 20 fills the area, inside it, without overlaps.
+let displays: [CGSize] = [CGSize(width: 1280, height: 800), CGSize(width: 1440, height: 900), CGSize(width: 1512, height: 982),
+                          CGSize(width: 1728, height: 1117), CGSize(width: 1920, height: 1080), CGSize(width: 2560, height: 1440),
+                          CGSize(width: 3008, height: 1692), CGSize(width: 3840, height: 2160), CGSize(width: 5120, height: 2880),
+                          CGSize(width: 1080, height: 1920)]
+for size in displays {
+    let area = CGRect(origin: CGPoint(x: -size.width, y: 30), size: size).insetBy(dx: 4, dy: 4)
+    for n in 1...20 {
+        let rects = Layout.grid(n: n, in: area, gap: 4)
+        let counts = Layout.rowCounts(n: n, area: area.size, gap: 4)
+        check(rects.count == n, "\(size) n=\(n) count")
+        check((counts.max() ?? 0) - (counts.min() ?? 0) <= 1, "\(size) n=\(n) uneven rows \(counts)")
+        for r in rects { check(area.contains(r) && r.width > 0 && r.height > 0, "\(size) n=\(n) cell \(r) outside") }
+        for i in rects.indices { for j in rects.indices where i < j {
+            check(rects[i].intersection(rects[j]).isEmpty, "\(size) n=\(n) overlap")
+        } }
+    }
+}
 
 // Terminal rounding: 519 high slot came out 525 -> ask for 506, which rounds to 511.
 let shrunk = Layout.shrunkRequest(request: CGSize(width: 635, height: 519), target: CGSize(width: 635, height: 519),

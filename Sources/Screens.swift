@@ -65,6 +65,11 @@ final class Settings {
         get { d.bool(forKey: "highlightWaiting") }
         set { d.set(newValue, forKey: "highlightWaiting") }
     }
+    /// Sessions that need you move to the first slots on their own.
+    var needsYouFirst: Bool {
+        get { d.bool(forKey: "needsYouFirst") }
+        set { d.set(newValue, forKey: "needsYouFirst") }
+    }
     var gap: CGFloat {
         get { CGFloat(d.double(forKey: "gap")) }
         set { d.set(Double(newValue), forKey: "gap") }

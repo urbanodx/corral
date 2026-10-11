@@ -1,6 +1,6 @@
 # Corral: menu-bar tiler for Terminal.app windows running Claude Code.
 APP       := build/Corral.app
-VERSION   := 0.3.0
+VERSION   := 0.4.0
 BUNDLE_ID := com.urbanodx.corral
 COMMIT    := $(shell git rev-parse --short HEAD 2>/dev/null || echo local)
 SOURCES   := $(wildcard Sources/*.swift)

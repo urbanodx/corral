@@ -25,10 +25,23 @@ asking you something and which have finished.
   Space change or a display change re-tiles after half a second. Windows keep
   their slots; a window never tiled before goes last. Windows already in
   their slot are not touched (every resize makes Claude redraw its screen).
-- **Drag to swap**: drag a tiled window by its title bar onto another window's
-  slot and let go: the two swap places. Drop it on a display Corral does not
-  tile onto and it floats there. A small nudge snaps back. Resizing from an
-  edge is not a drag.
+- **Any display, any resolution**: the grid is worked out from the display's
+  size every time, so plugging in a monitor, unplugging it or changing the
+  resolution just re-tiles. If the display you chose is not connected, the
+  terminals go to the display that holds most of them.
+- **Move windows around**:
+  - Drag a tiled window by its title bar onto another slot and let go: it
+    moves there and the windows in between shift by one. Drop it on a display
+    Corral does not tile onto and it floats there. A small nudge snaps back.
+    Resizing from an edge is not a drag.
+  - `⌃⌥←` / `⌃⌥→` move the front window one slot back or forward, `⌃⌥↑` /
+    `⌃⌥↓` swap it with the window above or below, `⌃⌥⇧←` / `⌃⌥⇧→` send it to
+    the first or the last slot.
+  - `⌃⌥P` puts the sessions that need you in the first slots (asking first,
+    then finished), longest waiting first; the rest keep their order. Turn on
+    *Keep sessions that need you first* in Settings to have that happen on its
+    own whenever a session starts asking or finishes. Nothing moves back once
+    you have dealt with one.
 - **Focus layout** (`⌃⌥F`): the front window gets 60% of its display and the
   rest share the column beside it. Press again to go back to the grid.
 - **Sessions that need you**:
@@ -54,8 +67,9 @@ All shortcuts use Control+Option: Option alone types characters on many
 European keyboard layouts, and `⌃⌥Space` belongs to the macOS input-source
 switcher.
 
-Settings (menu > Settings): auto-tile on/off, frames on/off, which
-displays to tile onto, gap between windows (0/4/8/12 pt), open at login.
+Settings (menu > Settings): auto-tile on/off, frames on/off, keep sessions
+that need you first, which displays to tile onto, gap between windows
+(0/4/8/12 pt), open at login.
 The first launch picks the display that already holds the most terminals.
 
 ## Install

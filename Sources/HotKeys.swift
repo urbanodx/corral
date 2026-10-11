@@ -8,6 +8,7 @@ final class HotKeys {
 
     struct Binding {
         let keyCode: Int
+        var modifiers = HotKeys.modifiers
         let label: String      // what the menu shows, e.g. "⌃⌥T"
         let action: () -> Void
     }
@@ -20,13 +21,14 @@ final class HotKeys {
     /// All shortcuts use Control+Option: Option alone types characters on
     /// many European layouts (Spanish, German, French...), and ⌃⌥Space is the macOS input switcher.
     static let modifiers = UInt32(controlKey | optionKey)
+    static let withShift = UInt32(controlKey | optionKey | shiftKey)
 
     func register(_ b: Binding) {
         installHandler()
         let id = UInt32(actions.count + 1)
         var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: OSType(0x4352_4C4C), id: id)   // 'CRLL'
-        let status = RegisterEventHotKey(UInt32(b.keyCode), Self.modifiers, hotKeyID,
+        let status = RegisterEventHotKey(UInt32(b.keyCode), b.modifiers, hotKeyID,
                                          GetApplicationEventTarget(), 0, &ref)
         if status == noErr, let ref {
             actions[id] = b.action
@@ -54,7 +56,8 @@ final class HotKeys {
 
 enum Key {
     static let t = kVK_ANSI_T, f = kVK_ANSI_F, n = kVK_ANSI_N, z = kVK_ANSI_Z
-    static let s = kVK_ANSI_S, o = kVK_ANSI_O
+    static let s = kVK_ANSI_S, o = kVK_ANSI_O, p = kVK_ANSI_P
+    static let left = kVK_LeftArrow, right = kVK_RightArrow, up = kVK_UpArrow, down = kVK_DownArrow
     static let digits = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
                          kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
 }

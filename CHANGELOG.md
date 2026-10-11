@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 (2026-10-11)
+
+- Move windows from the keyboard: `⌃⌥←` / `⌃⌥→` one slot, `⌃⌥↑` / `⌃⌥↓` a row,
+  `⌃⌥⇧←` / `⌃⌥⇧→` to the first or the last slot. Also in the menu under
+  "Move front window".
+- `⌃⌥P` puts the sessions that need you first. Settings > "Keep sessions that
+  need you first" does it on its own when a session starts asking or finishes.
+- Dragging a window onto another slot now moves it there and shifts the
+  windows in between, instead of swapping the two. In the focus layout a drop
+  onto or from the main pane still swaps.
+- Tests cover every window count from 1 to 20 on ten display sizes.
+
 ## 0.3.0 (2026-10-11)
 
 - Finds every Claude Code config dir from `CLAUDE_CONFIG_DIR` in each running
