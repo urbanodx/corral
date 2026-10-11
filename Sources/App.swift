@@ -68,7 +68,15 @@ final class Corral: NSObject, NSMenuDelegate {
     private var order: [Int] = []             // slot order; windows that left keep their place for when they return
     private var placements: [Int: Placement] = [:]
     private var undoStack: [[Int: CGRect]] = []
-    private var lastPending: Set<Int> = []    // sessions that needed you at the last poll
+    private var lastEpisodes: Set<Episode>?   // sessions that needed you at the last poll; nil before the first
+    private var dropPending = false           // a mouse-up is waiting for handleDrop
+    private var absent: [Int: Int] = [:]      // window id -> answers in a row it was missing from
+
+    /// One time a session started needing you: the same window asking again later is a new one.
+    private struct Episode: Hashable { let id: Int; let since: Date? }
+
+    /// Windows missing from this many Terminal answers in a row are closed for good.
+    private static let forgetAfter = 3
     private var pendingTile: DispatchWorkItem?
     private var problem: Problem?
     private var timer: Timer?
@@ -182,6 +190,11 @@ final class Corral: NSObject, NSMenuDelegate {
         case .success(var ws):
             problem = WindowMover.trusted ? nil : .accessibility
             let truth = WindowServer.terminalFrames()
+            if ws.isEmpty, !truth.isEmpty {
+                // Terminal listed no windows while some are on screen: keep the last good snapshot.
+                NSLog("Corral: Terminal listed no windows while \(truth.count) are on screen; keeping the last snapshot")
+                break
+            }
             for i in ws.indices {
                 if let f = truth[ws[i].id] { ws[i].frame = f } else { ws[i].onScreen = false }
             }
@@ -227,7 +240,21 @@ final class Corral: NSObject, NSMenuDelegate {
             }
             if settings.terminalLaunch != launch { settings.terminalLaunch = launch }
         }
-        let alive = Set(windows.map(\.id))
+        // A window missing from one answer can be a glitch (an incomplete snapshot), and forgetting
+        // it would drop its seen time and paint it orange: forget it only after it has been
+        // missing from `forgetAfter` answers in a row.
+        let present = Set(windows.map(\.id))
+        var alive = present
+        var stillAbsent: [Int: Int] = [:]
+        let remembered = Set(order).union(floating).union(placements.keys).union(tracker.seenAt.keys).union(absent.keys)
+        for id in remembered.subtracting(present) {
+            let n = (absent[id] ?? 0) + 1
+            if n < Self.forgetAfter { stillAbsent[id] = n; alive.insert(id) }
+        }
+        for (id, n) in absent where present.contains(id) {
+            NSLog("Corral: window \(id) was missing from \(n) Terminal answer(s) and is back")
+        }
+        absent = stillAbsent
         if !floating.isSubset(of: alive) { setFloating(floating.intersection(alive)) }
         if case .focus(let main) = mode, !alive.contains(main) { setMode(.grid) }
         order = order.filter(alive.contains)
@@ -437,10 +464,18 @@ final class Corral: NSObject, NSMenuDelegate {
         if setSlotOrder(visible) { tile() } else { NSSound.beep() }
     }
 
+    /// The front Terminal window right now. A move often follows a jump (⌃⌥N, ⌃⌥3) or a click by
+    /// less than a poll, so this asks Terminal again instead of trusting the last poll.
+    private func currentFrontID() -> Int? {
+        poll()
+        return frontWindowID
+    }
+
     /// The front window moves one slot back or forward; the window there takes its place.
     private func moveFront(by step: Int) {
+        let front = currentFrontID()
         let seq = movableSequence
-        guard let id = frontWindowID, let i = seq.firstIndex(of: id), seq.indices.contains(i + step) else {
+        guard let id = front, let i = seq.firstIndex(of: id), seq.indices.contains(i + step) else {
             NSSound.beep(); return
         }
         reorderAndTile(Layout.moving(id, to: i + step, in: seq))
@@ -448,16 +483,18 @@ final class Corral: NSObject, NSMenuDelegate {
 
     /// The front window goes to the first or the last slot; everyone in between shifts by one.
     private func moveFrontToEnd(first: Bool) {
+        let front = currentFrontID()
         let seq = movableSequence
-        guard let id = frontWindowID, seq.contains(id) else { NSSound.beep(); return }
+        guard let id = front, seq.contains(id) else { NSSound.beep(); return }
         reorderAndTile(Layout.moving(id, to: first ? 0 : seq.count - 1, in: seq))
     }
 
     /// The front window swaps with the window above or below it.
     private func moveFrontRow(up: Bool) {
+        let front = currentFrontID()
         let seq = movableSequence
         let frames = plan(tileable).frames.filter { seq.contains($0.key) }
-        guard let id = frontWindowID, let i = seq.firstIndex(of: id),
+        guard let id = front, let i = seq.firstIndex(of: id),
               let other = Layout.neighbour(of: id, up: up, frames: frames), let j = seq.firstIndex(of: other) else {
             NSSound.beep(); return
         }
@@ -468,24 +505,30 @@ final class Corral: NSObject, NSMenuDelegate {
 
     /// Sessions that need you take the first slots: asking longest first, then finished longest first.
     private func needsYouFirst() {
+        poll()
         let seq = movableSequence
         reorderAndTile(Layout.needsYouFirst(seq, pending: tracker.attention.map(\.id)))
     }
 
     /// With "Keep sessions that need you first" on: when a session starts asking or finishes, the
     /// ones that need you move to the first slots. Nothing moves back once you have dealt with one,
-    /// so the window you are typing in only moves when another session starts needing you.
+    /// and looking at an asking session and away again is not a new request, so the window you
+    /// are typing in only moves when another session starts needing you.
     private func keepNeedsYouFirst() {
-        let pending = tracker.attention.map(\.id)
-        let current = Set(pending)
-        guard settings.needsYouFirst, settings.autoTile, !current.isSubset(of: lastPending) else {
-            lastPending = current
+        let movable = movableSequence
+        let inGrid = Set(movable)
+        // Counted whether or not the window is in front, and only for windows in the grid, so a
+        // window that joins the grid while it needs you counts as new.
+        let episodes = Set(tracker.sessions.filter { ($0.activity.isAsking || $0.waiting) && inGrid.contains($0.id) }
+            .map { Episode(id: $0.id, since: $0.since) })
+        guard let last = lastEpisodes, settings.needsYouFirst, settings.autoTile, !episodes.isSubset(of: last) else {
+            lastEpisodes = episodes      // the first poll after launch only notes what is already there
             return
         }
-        // Not in the middle of a drag or another tile: try again at the next poll.
-        guard WindowMover.trusted, pendingTile == nil, NSEvent.pressedMouseButtons == 0 else { return }
-        lastPending = current
-        if setSlotOrder(Layout.needsYouFirst(movableSequence, pending: pending)) { tile() }
+        // Not during a drag, a drop about to be handled or another tile: try again at the next poll.
+        guard WindowMover.trusted, pendingTile == nil, !dropPending, NSEvent.pressedMouseButtons == 0 else { return }
+        lastEpisodes = episodes
+        if setSlotOrder(Layout.needsYouFirst(movable, pending: tracker.attention.map(\.id))) { tile() }
     }
 
     // MARK: - dragging
@@ -497,6 +540,7 @@ final class Corral: NSObject, NSMenuDelegate {
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
             guard let self, TerminalBridge.isFrontmost, self.settings.autoTile else { return }
             let point = ScreenInfo.topLeft(NSEvent.mouseLocation)
+            self.dropPending = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.handleDrop(at: point) }
         }
     }
@@ -506,6 +550,7 @@ final class Corral: NSObject, NSMenuDelegate {
     /// there; anywhere else it snaps back. In the focus layout a drop onto or from the main pane
     /// swaps the two windows, so the main pane always holds one.
     private func handleDrop(at point: CGPoint) {
+        dropPending = false
         guard pendingTile == nil, WindowMover.trusted, !placements.isEmpty else { return }
         let result = Layout.drop(at: point, slots: placements.mapValues(\.target),
                                  sizes: placements.mapValues { $0.actual?.size ?? $0.request },
@@ -534,6 +579,8 @@ final class Corral: NSObject, NSMenuDelegate {
 
     private func focus(_ id: Int) {
         if !WindowMover.focus(id) { bridge.focus(id) }
+        // It is in front now, even before Terminal's next answer says so.
+        if let i = windows.firstIndex(where: { $0.id == id }) { windows.insert(windows.remove(at: i), at: 0) }
         tracker.markSeen(id)
         refreshStatus()
     }
@@ -851,7 +898,7 @@ final class Corral: NSObject, NSMenuDelegate {
 
     @objc private func toggleNeedsYouFirst() {
         settings.needsYouFirst.toggle()
-        lastPending = []      // on: the sessions that already need you move first now
+        lastEpisodes = []     // on: the sessions that already need you move first now
     }
 
     @objc private func toggleHighlight() {

@@ -10,6 +10,10 @@
 - Dragging a window onto another slot now moves it there and shifts the
   windows in between, instead of swapping the two. In the focus layout a drop
   onto or from the main pane still swaps.
+- Fixed: one incomplete answer from Terminal could make Corral forget which
+  sessions you had already looked at, so every idle session turned orange. A
+  window now has to be missing from three answers in a row before Corral
+  forgets it, and an empty answer while windows are on screen is ignored.
 - Tests cover every window count from 1 to 20 on ten display sizes.
 
 ## 0.3.0 (2026-10-11)
