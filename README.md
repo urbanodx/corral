@@ -5,9 +5,9 @@ sessions at once in Terminal.app. It tiles every Terminal window into a grid,
 re-tiles when one opens or closes, and shows at a glance which sessions are
 asking you something and which have finished.
 
-![Corral tiling eight Claude Code sessions: one asks for permission (red frame), two have finished (orange), the menu bar shows "1! 2"](docs/corral.png)
+![Corral tiling twelve overlapping Terminal windows into a grid, framing the session that asks in red and the finished ones in orange, putting them first with Control+Option+P, then moving and dragging windows](docs/corral.gif)
 
-*Illustration of the layout and frames; the session names are made up.*
+*Animated illustration; the sessions are made up.*
 
 > **Unofficial.** Corral is not made by or affiliated with Anthropic. It reads
 > files and window titles that Claude Code writes for its own use (see
