@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- An answer from Terminal that would drop every window Corral knows (Terminal
+  not found, or Terminal listing none) is ignored until it comes three times in
+  a row, even when no window is on screen either. Ignored answers, forgotten
+  windows and returning windows are logged in clear text:
+  `log show --predicate 'subsystem == "com.urbanodx.corral"'`.
+
 ## 0.4.0 (2026-10-11)
 
 - Move windows from the keyboard: `⌃⌥←` / `⌃⌥→` one slot, `⌃⌥↑` / `⌃⌥↓` a row,

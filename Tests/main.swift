@@ -273,4 +273,23 @@ let endedTracker = SessionTracker()
 endedTracker.update(windows: [win(9, "m \u{2014} \u{2733} tiktok \u{2014} -zsh", tty: "ttys009")], frontID: nil, claude: [:], now: t0)
 check(endedTracker.sessions.first?.activity == .shell && endedTracker.waiting.isEmpty, "ended session is quiet")
 
+// Unconfirmed empty answer: Terminal not found, or listing 0 windows, while Corral knows 6 is
+// ignored on answers 1 and 2 and believed on the 3rd in a row; with none known it is believed at once.
+for empty in [TerminalBridge.Answer.notRunning, .windows(0)] {
+    var inARow = 0
+    for n in 1...3 {
+        let (believed, next) = TerminalBridge.believe(empty, known: 6, emptyInARow: inARow)
+        check(believed == (n == 3), "unconfirmed empty answer: \(empty), answer \(n) believed: \(believed)")
+        inARow = next
+    }
+    check(inARow == 0, "unconfirmed empty answer: \(empty) count resets once believed")
+}
+check(TerminalBridge.believe(.windows(0), known: 0, emptyInARow: 0) == (true, 0), "unconfirmed empty answer: 0 listed, 0 known")
+// A non-empty answer is believed at once, even after two empty ones, and resets the count.
+let afterGlitch = TerminalBridge.believe(.windows(6), known: 6, emptyInARow: 2)
+check(afterGlitch == (true, 0), "unconfirmed empty answer: non-empty after 2 empty -> \(afterGlitch)")
+check(TerminalBridge.believe(.windows(1), known: 6, emptyInARow: 0) == (true, 0), "unconfirmed empty answer: 1 of 6 listed")
+check(TerminalBridge.believe(.notRunning, known: 6, emptyInARow: afterGlitch.emptyInARow) == (false, 1),
+      "unconfirmed empty answer: the count starts over after a non-empty answer")
+
 if failures == 0 { print("tests: all passed") } else { print("tests: \(failures) failed"); exit(1) }
