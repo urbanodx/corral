@@ -1,4 +1,5 @@
 import AppKit
+import os
 import ServiceManagement
 
 @main
@@ -71,12 +72,13 @@ final class Corral: NSObject, NSMenuDelegate {
     private var lastEpisodes: Set<Episode>?   // sessions that needed you at the last poll; nil before the first
     private var dropPending = false           // a mouse-up is waiting for handleDrop
     private var absent: [Int: Int] = [:]      // window id -> answers in a row it was missing from
+    private var emptyInARow = 0               // empty Terminal answers in a row not believed yet
 
     /// One time a session started needing you: the same window asking again later is a new one.
     private struct Episode: Hashable { let id: Int; let since: Date? }
 
-    /// Windows missing from this many Terminal answers in a row are closed for good.
-    private static let forgetAfter = 3
+    private static let log = Logger(subsystem: "com.urbanodx.corral", category: "snapshot")
+    private static let loginLog = Logger(subsystem: "com.urbanodx.corral", category: "login")
     private var pendingTile: DispatchWorkItem?
     private var problem: Problem?
     private var timer: Timer?
@@ -187,19 +189,12 @@ final class Corral: NSObject, NSMenuDelegate {
             windows = []
         case .failure(.script(let message)):
             problem = .script(message)     // keep the last good snapshot
-        case .success(var ws):
+        case .failure(.notRunning):
             problem = WindowMover.trusted ? nil : .accessibility
-            let truth = WindowServer.terminalFrames()
-            if ws.isEmpty, !truth.isEmpty {
-                // Terminal listed no windows while some are on screen: keep the last good snapshot.
-                NSLog("Corral: Terminal listed no windows while \(truth.count) are on screen; keeping the last snapshot")
-                break
-            }
-            for i in ws.indices {
-                if let f = truth[ws[i].id] { ws[i].frame = f } else { ws[i].onScreen = false }
-            }
-            windows = ws
-            trusted = true
+            trusted = take([], as: .notRunning)
+        case .success(let ws):
+            problem = WindowMover.trusted ? nil : .accessibility
+            trusted = take(ws, as: .windows(ws.count))
         }
         if trusted { forgetClosedWindows() }
 
@@ -221,6 +216,28 @@ final class Corral: NSObject, NSMenuDelegate {
         }
         refreshStatus()
         if Date().timeIntervalSince(lastSave) > 15 { saveState() }
+    }
+
+    /// Makes Terminal's answer the snapshot, unless it would drop every known window and has not
+    /// come `forgetAfter` times in a row yet: then the last snapshot stays, as on a script error.
+    /// True when taken.
+    private func take(_ listed: [TermWindow], as answer: TerminalBridge.Answer) -> Bool {
+        let truth = WindowServer.terminalFrames()
+        let (believed, inARow) = TerminalBridge.believe(answer, known: windows.count, emptyInARow: emptyInARow)
+        if listed.isEmpty, !windows.isEmpty {
+            // Counts only, never titles, so the line can be public.
+            let line = "\(believed ? "believed" : "ignored") empty answer \(emptyInARow + 1) of \(TerminalBridge.forgetAfter) in a row (\(answer)): "
+                + "\(listed.count) from Terminal, \(truth.count) on screen, \(windows.count) known"
+            Self.log.notice("\(line, privacy: .public)")
+        }
+        emptyInARow = inARow
+        guard believed else { return false }
+        var ws = listed
+        for i in ws.indices {
+            if let f = truth[ws[i].id] { ws[i].frame = f } else { ws[i].onScreen = false }
+        }
+        windows = ws
+        return true
     }
 
     private func updateSessions() {
@@ -249,10 +266,11 @@ final class Corral: NSObject, NSMenuDelegate {
         let remembered = Set(order).union(floating).union(placements.keys).union(tracker.seenAt.keys).union(absent.keys)
         for id in remembered.subtracting(present) {
             let n = (absent[id] ?? 0) + 1
-            if n < Self.forgetAfter { stillAbsent[id] = n; alive.insert(id) }
+            if n < TerminalBridge.forgetAfter { stillAbsent[id] = n; alive.insert(id) }
+            else { Self.log.notice("window \(id, privacy: .public) was missing from \(n, privacy: .public) Terminal answers in a row; forgotten") }
         }
         for (id, n) in absent where present.contains(id) {
-            NSLog("Corral: window \(id) was missing from \(n) Terminal answer(s) and is back")
+            Self.log.notice("window \(id, privacy: .public) was missing from \(n, privacy: .public) Terminal answer(s) and is back")
         }
         absent = stillAbsent
         if !floating.isSubset(of: alive) { setFloating(floating.intersection(alive)) }
@@ -925,7 +943,7 @@ final class Corral: NSObject, NSMenuDelegate {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
             else { try SMAppService.mainApp.register() }
         } catch {
-            NSLog("Corral: open at login failed: \(error)")
+            Self.loginLog.error("open at login failed: \(String(describing: error), privacy: .public)")
             NSSound.beep()
         }
     }

@@ -20,7 +20,36 @@ final class TerminalBridge {
 
     enum Failure: Error {
         case notPermitted
+        case notRunning
         case script(String)
+    }
+
+    /// Windows missing from this many Terminal answers in a row are closed for good, and an
+    /// answer that would drop every known window is believed only once it came this many times.
+    static let forgetAfter = 3
+
+    /// An answer as `believe` weighs it.
+    enum Answer: Equatable, CustomStringConvertible {
+        case notRunning        // no Terminal process found
+        case windows(Int)      // Terminal listed this many windows
+
+        var description: String {
+            switch self {
+            case .notRunning: return "not running"
+            case .windows(let n): return "Terminal listed \(n)"
+            }
+        }
+    }
+
+    /// Whether to believe `answer` while Corral knows `known` windows and the last `emptyInARow`
+    /// empty answers were not believed, plus the count to pass with the next answer. An answer
+    /// that would take Corral from some windows to none can be a glitch (Terminal briefly missing
+    /// from the running apps, a display that has not reattached), so it is believed only on the
+    /// `forgetAfter`-th time in a row. Any believed answer resets the count.
+    static func believe(_ answer: Answer, known: Int, emptyInARow: Int) -> (believed: Bool, emptyInARow: Int) {
+        if case .windows(let n) = answer, n > 0 { return (true, 0) }
+        if known == 0 || emptyInARow + 1 >= forgetAfter { return (true, 0) }
+        return (false, emptyInARow + 1)
     }
 
     static var isRunning: Bool {
@@ -55,9 +84,9 @@ final class TerminalBridge {
         end timeout
         """)
 
-    /// Never launches Terminal: returns [] when it is not running.
+    /// Never launches Terminal: fails with `.notRunning` when it is not running.
     func snapshot() -> Result<[TermWindow], Failure> {
-        guard Self.isRunning else { return .success([]) }
+        guard Self.isRunning else { return .failure(.notRunning) }
         switch run(fastSnapshot) {
         case .success(let d):
             if let ws = parseColumns(d) { return .success(ws) }

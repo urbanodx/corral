@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import os
 
 /// Global shortcuts through Carbon's RegisterEventHotKey: works without
 /// Accessibility or Input Monitoring permission.
@@ -17,6 +18,7 @@ final class HotKeys {
     private var refs: [EventHotKeyRef] = []
     private var handlerInstalled = false
     private(set) var failed: [String] = []
+    private static let log = Logger(subsystem: "com.urbanodx.corral", category: "hotkeys")
 
     /// All shortcuts use Control+Option: Option alone types characters on
     /// many European layouts (Spanish, German, French...), and ⌃⌥Space is the macOS input switcher.
@@ -35,7 +37,7 @@ final class HotKeys {
             refs.append(ref)
         } else {
             failed.append(b.label)
-            NSLog("Corral: could not register \(b.label) (status \(status))")
+            Self.log.error("could not register \(b.label, privacy: .public) (status \(status, privacy: .public))")
         }
     }
 
