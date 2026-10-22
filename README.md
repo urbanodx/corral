@@ -162,6 +162,42 @@ and tracks who needs you, `Borders.swift` draws the frames, `App.swift` is the
 menu and wiring. `make test` runs every source but `App.swift` against
 `Tests/main.swift` (no XCTest needed).
 
+### Reading the log
+
+When Corral loses a window, keeps one it should have dropped, or a shortcut
+does not work, its own lines in the macOS unified log say what it saw. Read
+the last day with:
+
+```sh
+/usr/bin/log show --last 1d --predicate 'subsystem == "com.urbanodx.corral"'
+```
+
+Type the full `/usr/bin/log`: in zsh, the default macOS shell, a bare `log` is
+a shell builtin and does not read the unified log. Change `1d` to reach back to
+when it happened (`2h`, `3d`).
+
+The lines hold window ids, counts and error statuses, never a window title, a
+folder or a session name, so you can paste them into an issue as they are:
+
+- `ignored empty answer 1 of 3 in a row (not running): 0 from Terminal, 0 on screen, 3 known`:
+  Terminal answered with no windows, or was not found, while Corral knew some,
+  so Corral kept its last snapshot. On the third such answer in a row the line
+  says `believed` and Corral takes the empty list as true.
+- `window 1234 was missing from 3 Terminal answers in a row; forgotten`: Corral
+  dropped that window's slot, its float setting and the time you last saw it.
+- `window 1234 was missing from 1 Terminal answer(s) and is back`: the window
+  came back before Corral forgot it.
+- `could not register ⌃⌥T (status ...)`: another app holds that shortcut.
+- `open at login failed: ...`: macOS refused the login item.
+
+These lines come from builds of `pro` after 0.4.0 (see "Unreleased" in
+[CHANGELOG.md](CHANGELOG.md)). A build of the v0.4.0 tag or older writes fewer
+lines, through NSLog, each starting with `Corral:`:
+
+```sh
+/usr/bin/log show --last 1d --predicate 'process == "Corral" AND eventMessage BEGINSWITH "Corral:"'
+```
+
 ## Limits
 
 - Terminal.app only. iTerm2, Ghostty or the VS Code terminal would each need
